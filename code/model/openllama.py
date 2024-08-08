@@ -84,7 +84,7 @@ class OpenLLAMAPEFTModel(nn.Module):
         print (f'Initializing visual encoder from {imagebind_ckpt_path} ...')
         self.visual_encoder, self.visual_hidden_size = \
         imagebind_model.imagebind_huge(pretrained=True, store_path=imagebind_ckpt_path)
-        # free vision encoder
+        # freeze vision encoder
         for name, param in self.visual_encoder.named_parameters():
             param.requires_grad = False
         self.visual_encoder.eval()
@@ -109,7 +109,7 @@ class OpenLLAMAPEFTModel(nn.Module):
         self.llama_tokenizer.pad_token = self.llama_tokenizer.eos_token
         self.llama_tokenizer.padding_side = "right"
         print ('Language decoder initialized.')
-
+        # linear projection
         self.llama_proj = nn.Linear(
             self.visual_hidden_size, self.llama_model.config.hidden_size
         )
@@ -124,7 +124,7 @@ class OpenLLAMAPEFTModel(nn.Module):
         with torch.no_grad():
             embeddings = self.visual_encoder(inputs)
             video_embeds = embeddings[ModalityType.VISION] # bsz x 1024
-        inputs_llama = self.llama_proj(video_embeds).unsqueeze(1) # bsz x 1 x llama_size
+        inputs_llama = self.llama_proj(video_embeds).unsqueeze(1) # bsz x 1 x llama_size 难道只有一个token位置吗？
         atts_llama = torch.ones(inputs_llama.size()[:-1], dtype=torch.long).to(self.device) # bsz x 1
         return inputs_llama, atts_llama
 
@@ -170,17 +170,17 @@ class OpenLLAMAPEFTModel(nn.Module):
         attention_mask = attention_mask.to(self.device) # bsz x s2
 
         batch_size = img_embeds.shape[0]
-        p_before = PROMPT_START
+        p_before = PROMPT_START # '### Human: <Img>' 
         p_before_tokens = self.llama_tokenizer(p_before, 
             return_tensors="pt", add_special_tokens=False).to(self.device)
         # peft model need deeper call
-        p_before_embeds = self.llama_model.model.model.embed_tokens(p_before_tokens.input_ids).expand(batch_size, -1, -1) # bsz x s1 x embed_dim
-        p_after_embeds = self.llama_model.model.model.embed_tokens(input_ids).expand(batch_size, -1, -1) # bsz x s2 x embed_dim
+        p_before_embeds = self.llama_model.model.model.embed_tokens(p_before_tokens.input_ids).expand(batch_size, -1, -1) # bsz x s1 x embed_dim 前缀txt emb
+        p_after_embeds = self.llama_model.model.model.embed_tokens(input_ids).expand(batch_size, -1, -1) # bsz x s2 x embed_dim  正文txt emb
         bos = torch.ones([batch_size, 1],
                          dtype=p_before_tokens.input_ids.dtype,
-                         device=p_before_tokens.input_ids.device) * self.llama_tokenizer.bos_token_id # bsz x 1
+                         device=p_before_tokens.input_ids.device) * self.llama_tokenizer.bos_token_id # bsz x 1: begin of sentence token id
         bos_embeds = self.llama_model.model.model.embed_tokens(bos) # bsz x 1 x embed_dim
-        inputs_embeds = torch.cat([bos_embeds, p_before_embeds, img_embeds, p_after_embeds], dim=1) # bsz x (1+s1+1+s2) x embed_dim
+        inputs_embeds = torch.cat([bos_embeds, p_before_embeds, img_embeds, p_after_embeds], dim=1) # bsz x (1+s1+1+s2) x embed_dim： img emb只有一个token位置！！！够吗？ 
 
         # create targets
         empty_targets = (
